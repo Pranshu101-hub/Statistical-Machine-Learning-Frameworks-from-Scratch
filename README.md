@@ -6,10 +6,10 @@ Numpy-only implementations of core ML algorithms, built from scratch as part of 
 
 | Folder | Topics | Dataset |
 |---|---|---|
-| `A1_Bayes_Classifiers_LDA_QDA` | LDA, QDA, MLE for Gaussian class params, t-SNE visualization | MNIST (digits 0,1,2) |
-| `A2_PCA_FDA_Dimensionality_Reduction` | PCA (eigen-decomp from scratch), Fisher Discriminant Analysis, image reconstruction | MNIST (digits 0,1,2) |
-| `A3_Decision_Trees_Bagging_RandomForest` | Decision Trees, Bagging, Random Forest, Ridge/Lasso Regression | MNIST / Fashion-MNIST |
-| `A4_Boosting_Perceptron` | AdaBoost, Gradient Boosting (regression stumps), Rosenblatt Perceptron | MNIST (digits 4 vs 9), synthetic 2D data |
+| `Bayes_Classifiers_LDA_QDA` | LDA, QDA, MLE for Gaussian class params, t-SNE visualization | MNIST (digits 0,1,2) |
+| `PCA_FDA_Dimensionality_Reduction` | PCA (eigen-decomp from scratch), Fisher Discriminant Analysis, image reconstruction | MNIST (digits 0,1,2) |
+| `Decision_Trees_Bagging_RandomForest` | Decision Trees, Bagging, Random Forest, Ridge/Lasso Regression | MNIST / Fashion-MNIST |
+| `Boosting_Perceptron` | AdaBoost, Gradient Boosting (regression stumps), Rosenblatt Perceptron | MNIST (digits 4 vs 9), synthetic 2D data |
 
 ## How to run
 
