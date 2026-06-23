@@ -1,0 +1,139 @@
+import os
+import numpy
+import matplotlib.pyplot as mtplot
+from urllib.request import urlretrieve
+
+# load data
+def load_mnist():
+    d = "mnist.npz"
+    if not os.path.exists(d):
+        url = "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz"
+        print("downloading data from", url, "...")
+        urlretrieve(url, d)
+    f = numpy.load(d)
+    x_train, y_train = f['x_train'], f['y_train']
+    x_test,  y_test  = f['x_test'],  f['y_test']
+    f.close()
+    return (x_train, y_train), (x_test, y_test)
+
+print("loading data...")
+(x_train_, y_train_), (x_test_, y_test_) = load_mnist()
+
+# preprocess: keep only classes 4 and 9, flatten and normalise
+def preprocess_data(x_data, y_data):
+    filt = numpy.isin(y_data, [4, 9]) # keep only digits 4 and 9
+    x_f = x_data[filt]
+    y_f = y_data[filt]
+    x_flat = x_f.reshape(x_f.shape[0], -1) # flatten 28x28 -> 784
+    x_norm = x_flat.astype(numpy.float64) / 255.0  # normalise to [0,1]
+    y_bin = numpy.where(y_f == 4, -1, 1) # 4 -> -1, 9 -> +1 (adaboost needs {-1,+1})
+    return x_norm, y_bin
+
+X_train, y_train = preprocess_data(x_train_, y_train_)  # (N_train, 784)
+X_test, y_test = preprocess_data(x_test_,  y_test_) # (N_test,  784)
+print("train:", X_train.shape, ", test:", X_test.shape)
+
+# train/val split: 1000 per class aside for validation
+idx_neg = numpy.where(y_train == -1)[0] # indices for class -1 (digit 4)
+idx_pos = numpy.where(y_train ==  1)[0] # indices for class +1 (digit 9)
+
+val_idx = numpy.concatenate([idx_neg[:1000], idx_pos[:1000]])   # 1000 from each class
+tr_idx = numpy.concatenate([idx_neg[1000:], idx_pos[1000:]])   # rest for training
+
+X_val, y_val = X_train[val_idx], y_train[val_idx] # validation set
+X_tr, y_tr = X_train[tr_idx],  y_train[tr_idx] # training set
+print("train after split:", X_tr.shape, ", val:", X_val.shape)
+
+# pca: fit only on training set, project val and test using same matrix
+def pca(X, n): # X is (N, 784)
+    mew = numpy.mean(X, axis=0, keepdims=True)  # mean of every feature (1, 784)
+    Xc = X - mew # centre the data
+    N = X.shape[0]
+    S = (Xc.T @ Xc) / (N - 1) # cov matrix (784, 784)
+    eigval, eigvec = numpy.linalg.eigh(S) # eigh for symmetric matrix
+    eigval = numpy.real(eigval)
+    eigvec = numpy.real(eigvec)
+    i= numpy.argsort(eigval)[::-1] # sort descending
+    eigvec = eigvec[:, i]
+    Up= eigvec[:, :n] # top n eigenvectors (784, n)
+    Y = Xc @ Up # project data (N, n)
+    return Y, Up, mew
+
+print("running PCA to 5 dims...")
+X_tr_pca,Up, mew_tr = pca(X_tr, n=5) # fit pca on training only
+X_val_pca = (X_val- mew_tr) @ Up # project val  with same pca
+X_test_pca = (X_test - mew_tr) @ Up # project test with same pca
+
+# decision stump: find the best split minimising weighted misclassification error
+def train_stump(X, y, w):
+    n, d = X.shape
+    best = {'error': numpy.inf} # track best stump found so far
+    for feat in range(d): # try every pca dimension
+        vals = X[:, feat]
+        sorted_unique = numpy.unique(vals)
+        midpoints = (sorted_unique[:-1] + sorted_unique[1:]) / 2  # midpoints between consecutive values
+        if len(midpoints) > 1000: # randomly pick 1000 midpoints to speed up
+            midpoints = numpy.random.choice(midpoints, 1000, replace=False)
+        for theta in midpoints:
+            for polarity in [1, -1]: # try both orientations of the split
+                preds = numpy.where(vals <= theta, polarity, -polarity) # predict for all samples
+                wrong = (preds != y).astype(float) # 1 where misclassified
+                err = numpy.dot(w, wrong) # weighted error e = sum w_i * 1[wrong]
+                if err < best['error']: # save best stump
+                    best = {'error': err, 'feat': feat, 'theta': theta, 'polarity': polarity}
+    return best
+
+def predict_stump(X, stump):
+    vals = X[:, stump['feat']] # extract the feature this stump splits on
+    return numpy.where(vals <= stump['theta'], stump['polarity'], -stump['polarity']) # shape (n,)
+
+# adaboost training loop
+print("training adaboost with 300 stumps...")
+T = 300
+n_tr = len(y_tr)
+w = numpy.ones(n_tr) / n_tr  # uniform weights to start: w_i = 1/n
+
+stumps = [] # store all weak learners
+alphas = [] # store all alpha_t values
+val_accs = [] # validation accuracy after each round
+
+for t in range(T):
+    stump = train_stump(X_tr_pca, y_tr, w) # fit stump on weighted training data
+    preds_tr = predict_stump(X_tr_pca, stump)  # predictions on train
+
+    eps = stump['error'] # weighted misclassification error e_t
+    eps = numpy.clip(eps, 1e-10, 1 - 1e-10) # clamp for numerical safety before log
+    alpha = 0.5 * numpy.log((1 - eps) / eps)   # alpha_t = 0.5 * ln((1-e)/e)
+
+    w*= numpy.exp(-alpha * y_tr * preds_tr) # update: upweight wrong, downweight correct
+    w/= w.sum() # renormalise so weights sum to 1
+
+    stumps.append(stump)
+    alphas.append(alpha)
+
+    # val accuracy: H(x) = sign(sum_s alpha_s * h_s(x))
+    val_scores = sum(alphas[s] * predict_stump(X_val_pca, stumps[s]) for s in range(t + 1))
+    val_preds = numpy.sign(val_scores) # final class prediction
+    val_acc = numpy.mean(val_preds == y_val)  # fraction correct
+    val_accs.append(val_acc)
+
+    print("round", t+1, ": eps =", round(eps, 4), ", alpha =", round(alpha, 4), ", val acc =", round(val_acc, 4))
+
+# best iteration and test accuracy
+best_t = int(numpy.argmax(val_accs)) # iteration with highest val accuracy
+print("\nbest iteration:", best_t + 1, "| val acc:", round(val_accs[best_t], 4))
+
+test_scores = sum(alphas[s] * predict_stump(X_test_pca, stumps[s]) for s in range(best_t + 1))
+test_preds = numpy.sign(test_scores)
+test_acc = numpy.mean(test_preds == y_test)
+print("test accuracy at best iteration:", round(test_acc, 4))
+
+# plot val accuracy vs number of stumps
+mtplot.figure(figsize=(9, 5))
+mtplot.plot(range(1, T + 1), val_accs, color='steelblue', linewidth=1.5) # accuracy curve
+mtplot.xlabel("number of stumps (T)")
+mtplot.ylabel("validation accuracy")
+mtplot.title("adaboost: validation accuracy vs number of stumps")
+mtplot.legend()
+mtplot.tight_layout()
+mtplot.show()
